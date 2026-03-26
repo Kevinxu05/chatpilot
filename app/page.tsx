@@ -1,6 +1,8 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+/* eslint-disable @next/next/no-img-element */
+
+import React, { useMemo, useRef, useState } from 'react';
 
 type Mode = 'interpret' | 'reply' | 'optimize';
 
@@ -34,11 +36,22 @@ function safeString(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
 
+function formatRiskLevel(level: InterpretResponse['risk_level'] | null): string {
+  if (!level) return '—';
+  const map: Record<InterpretResponse['risk_level'], string> = {
+    low: '低',
+    medium: '中',
+    high: '高',
+  };
+  return map[level];
+}
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>('interpret');
 
   const [otherMessage, setOtherMessage] = useState('');
   const [context, setContext] = useState('');
+  const [images, setImages] = useState<Array<{ dataUrl: string; name: string }>>([]);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +69,47 @@ export default function Home() {
 
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
-  const canRun = useMemo(() => otherMessage.trim().length > 0 && !loading, [otherMessage, loading]);
+  const canRun = useMemo(() => {
+    const hasText = otherMessage.trim().length > 0;
+    const hasImages = images.length > 0;
+    return (hasText || hasImages) && !loading;
+  }, [otherMessage, images.length, loading]);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  function readFileAsDataUrl(file: File) {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result;
+        if (typeof result === 'string') resolve(result);
+        else reject(new Error('Failed to read file as data URL.'));
+      };
+      reader.onerror = () => reject(new Error('Failed to read file.'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function addImages(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+
+    const files = Array.from(fileList);
+    const items = await Promise.all(
+      files.map(async (f) => ({
+        name: f.name,
+        dataUrl: await readFileAsDataUrl(f),
+      }))
+    );
+
+    setImages((prev) => [...prev, ...items]);
+
+    // reset input value so selecting the same file again triggers onChange
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  function removeImage(idx: number) {
+    setImages((prev) => prev.filter((_, i) => i !== idx));
+  }
 
   async function run() {
     setError(null);
@@ -65,12 +118,15 @@ export default function Home() {
     try {
       const text = otherMessage.trim();
       const bg = context.trim();
+      const image_data_urls = images.length > 0 ? images.map((i) => i.dataUrl) : undefined;
 
       // 先解释（分析 + 潜台词/情绪/风险/建议）
+      const interpretBody: Record<string, unknown> = { text, context: bg };
+      if (image_data_urls) interpretBody.image_data_urls = image_data_urls;
       const interpretRes = await fetch('/api/interpret', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, context: bg }),
+        body: JSON.stringify(interpretBody),
       });
 
       if (!interpretRes.ok) {
@@ -87,37 +143,33 @@ export default function Home() {
       setRiskLevel(safeRisk(interpretJson.risk_level));
       setSuggestion(safeString(interpretJson.suggestion));
 
-      // reply/optimize 需要回复建议
-      if (mode === 'reply' || mode === 'optimize') {
-        const replyRes = await fetch('/api/reply', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, context: bg }),
-        });
+      // 任意模式都会自动生成三条回复建议
+      const replyBody: Record<string, unknown> = { text, context: bg };
+      if (image_data_urls) replyBody.image_data_urls = image_data_urls;
+      const replyRes = await fetch('/api/reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(replyBody),
+      });
 
-        if (!replyRes.ok) {
-          const t = await replyRes.text().catch(() => '');
-          throw new Error(`Reply 请求失败：${replyRes.status} ${t}`.trim());
-        }
-
-        const replyJson = (await replyRes.json()) as Partial<ReplyResponse>;
-        setReplyAnalysis(safeString(replyJson.analysis));
-
-        const repsRaw: unknown[] = Array.isArray(replyJson.replies) ? replyJson.replies as unknown[] : [];
-        const repsParsed = repsRaw
-          .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object')
-          .map((r) => ({
-            label: safeString(r.label),
-            content: safeString(r.content),
-          }))
-          .slice(0, 3);
-
-        setReplies(repsParsed);
-      } else {
-        // interpret 模式不更新 reply 内容
-        setReplyAnalysis('');
-        setReplies([]);
+      if (!replyRes.ok) {
+        const t = await replyRes.text().catch(() => '');
+        throw new Error(`Reply 请求失败：${replyRes.status} ${t}`.trim());
       }
+
+      const replyJson = (await replyRes.json()) as Partial<ReplyResponse>;
+      setReplyAnalysis(safeString(replyJson.analysis));
+
+      const repsRaw: unknown[] = Array.isArray(replyJson.replies) ? (replyJson.replies as unknown[]) : [];
+      const repsParsed = repsRaw
+        .filter((r): r is Record<string, unknown> => !!r && typeof r === 'object')
+        .map((r) => ({
+          label: safeString(r.label),
+          content: safeString(r.content),
+        }))
+        .slice(0, 3);
+
+      setReplies(repsParsed);
 
       setCopiedIndex(null);
     } catch (e) {
@@ -159,34 +211,94 @@ export default function Home() {
 
         {/* 输入区 */}
         <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <div className="grid gap-6 lg:grid-cols-2">
+          {/* 上传图片（多张） */}
+          <div>
+            <div className="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-200">
+              上传图片（可多张）
+            </div>
+
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 shadow-sm transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-50 dark:hover:bg-zinc-800">
+                <span>选择图片</span>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => addImages(e.target.files)}
+                />
+              </label>
+
+              {images.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setImages([])}
+                  className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                >
+                  清空
+                </button>
+              )}
+            </div>
+
+            {images.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-3">
+                {images.map((img, idx) => (
+                  <div
+                    key={`${img.name}-${idx}`}
+                    className="relative rounded-xl border border-zinc-200 bg-white p-1 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+                  >
+                    <img
+                      src={img.dataUrl}
+                      alt={img.name}
+                      className="h-20 w-20 rounded-lg object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeImage(idx)}
+                      className="absolute -right-2 -top-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-zinc-200 bg-white text-xs font-bold text-zinc-700 shadow-sm transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                      aria-label="Remove image"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+              图片会随请求一起发送，用于“分析/回复/优化”。（单次上传不要太多大图）
+            </p>
+          </div>
+
+          <div className="mt-6 grid gap-6 lg:grid-cols-2">
             <div>
               <label className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-200">
-                对方消息
+                对方消息（可选）
               </label>
               <textarea
                 value={otherMessage}
                 onChange={(e) => setOtherMessage(e.target.value)}
-                placeholder="粘贴对方发来的原话（尽量原文）..."
+                placeholder="可留空；仅用图片也可以。若填写，粘贴对方原话..."
                 className="min-h-[160px] w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-zinc-900 placeholder:text-zinc-500 outline-none focus:border-zinc-300 focus:ring-0 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50"
               />
               <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                建议包含情境、语气、关键措辞。
+                填写文字会让分析更贴近语气和语义；不填也可以只分析图片。
               </p>
             </div>
 
             <div>
               <label className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-200">
-                背景（关系/历史/顾虑）
+                背景（可选）
               </label>
               <textarea
                 value={context}
                 onChange={(e) => setContext(e.target.value)}
-                placeholder="例如：关系阶段、发生过的关键事件、对方可能在意什么..."
+                placeholder="可留空；例如关系阶段、关键事件、对方在意点..."
                 className="min-h-[160px] w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-zinc-900 placeholder:text-zinc-500 outline-none focus:border-zinc-300 focus:ring-0 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50"
               />
               <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                背景可提升建议的匹配度。
+                背景会影响建议方向；不填默认按一般关系沟通场景处理。
               </p>
             </div>
           </div>
@@ -237,7 +349,7 @@ export default function Home() {
             </button>
 
             <div className="text-xs text-zinc-500 dark:text-zinc-400">
-              分析：`POST /api/interpret`；回复：`POST /api/reply`
+              每次生成会先调用 `POST /api/interpret`，再自动调用 `POST /api/reply` 得到三条回复建议。
             </div>
           </div>
 
@@ -281,7 +393,7 @@ export default function Home() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                      情绪分数
+                      情绪分数（0–10）
                     </div>
                     <div className="mt-1 text-sm leading-relaxed">
                       {emotionScore === null ? '—' : emotionScore}
@@ -292,7 +404,7 @@ export default function Home() {
                       风险等级
                     </div>
                     <div className="mt-1 text-sm leading-relaxed">
-                      {riskLevel || '—'}
+                      {formatRiskLevel(riskLevel)}
                     </div>
                   </div>
                 </div>
@@ -335,16 +447,14 @@ export default function Home() {
                   说明：`/api/interpret` 仅返回一个 `suggestion` 字段，因此以上三个分项展示同一内容。
                 </p>
 
-                {mode !== 'interpret' && (
-                  <div className="rounded-xl border border-zinc-200 bg-white p-3 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
-                    <div className="text-xs font-semibold text-zinc-600 dark:text-zinc-200">
-                      回复补充分析
-                    </div>
-                    <div className="mt-1 whitespace-pre-wrap leading-relaxed">
-                      {replyAnalysis || '—'}
-                    </div>
+                <div className="rounded-xl border border-zinc-200 bg-white p-3 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
+                  <div className="text-xs font-semibold text-zinc-600 dark:text-zinc-200">
+                    回复补充分析
                   </div>
-                )}
+                  <div className="mt-1 whitespace-pre-wrap leading-relaxed">
+                    {replyAnalysis || '—'}
+                  </div>
+                </div>
               </div>
             </div>
 
