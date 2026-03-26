@@ -4,14 +4,14 @@
 
 import React, { useMemo, useRef, useState } from 'react';
 
-type Mode = 'interpret' | 'reply' | 'optimize';
-
 type InterpretResponse = {
   surface_meaning: string;
   subtext: string;
   emotion_score: number;
   risk_level: 'low' | 'medium' | 'high';
-  suggestion: string;
+  suggestion_push: string;
+  suggestion_keep: string;
+  suggestion_withdraw: string;
 };
 
 type ReplyResponse = {
@@ -46,34 +46,38 @@ function formatRiskLevel(level: InterpretResponse['risk_level'] | null): string 
   return map[level];
 }
 
-export default function Home() {
-  const [mode, setMode] = useState<Mode>('interpret');
+function riskGuidance(level: InterpretResponse['risk_level'] | null): string {
+  if (!level) return '';
+  if (level === 'low') return '信号相对温和，可按你的节奏自然回应。';
+  if (level === 'medium') return '存在误解或情绪升温可能，注意措辞与节奏，避免硬碰硬。';
+  return '张力偏高，优先降温与留白，减少追问与指责式表达。';
+}
 
-  const [otherMessage, setOtherMessage] = useState('');
-  const [context, setContext] = useState('');
+export default function Home() {
+  const [input, setInput] = useState('');
   const [images, setImages] = useState<Array<{ dataUrl: string; name: string }>>([]);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // interpret 结果
   const [surfaceMeaning, setSurfaceMeaning] = useState<string>('');
   const [subtext, setSubtext] = useState<string>('');
   const [emotionScore, setEmotionScore] = useState<number | null>(null);
   const [riskLevel, setRiskLevel] = useState<InterpretResponse['risk_level'] | null>(null);
-  const [suggestion, setSuggestion] = useState<string>('');
+  const [suggestionPush, setSuggestionPush] = useState<string>('');
+  const [suggestionKeep, setSuggestionKeep] = useState<string>('');
+  const [suggestionWithdraw, setSuggestionWithdraw] = useState<string>('');
 
-  // reply 结果
   const [replyAnalysis, setReplyAnalysis] = useState<string>('');
   const [replies, setReplies] = useState<Array<{ label: string; content: string }>>([]);
 
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   const canRun = useMemo(() => {
-    const hasText = otherMessage.trim().length > 0;
+    const hasText = input.trim().length > 0;
     const hasImages = images.length > 0;
     return (hasText || hasImages) && !loading;
-  }, [otherMessage, images.length, loading]);
+  }, [input, images.length, loading]);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -92,7 +96,6 @@ export default function Home() {
 
   async function addImages(fileList: FileList | null) {
     if (!fileList || fileList.length === 0) return;
-
     const files = Array.from(fileList);
     const items = await Promise.all(
       files.map(async (f) => ({
@@ -100,10 +103,7 @@ export default function Home() {
         dataUrl: await readFileAsDataUrl(f),
       }))
     );
-
     setImages((prev) => [...prev, ...items]);
-
-    // reset input value so selecting the same file again triggers onChange
     if (fileInputRef.current) fileInputRef.current.value = '';
   }
 
@@ -116,12 +116,11 @@ export default function Home() {
     setLoading(true);
 
     try {
-      const text = otherMessage.trim();
-      const bg = context.trim();
+      const text = input.trim();
+      const context = '';
       const image_data_urls = images.length > 0 ? images.map((i) => i.dataUrl) : undefined;
 
-      // 先解释（分析 + 潜台词/情绪/风险/建议）
-      const interpretBody: Record<string, unknown> = { text, context: bg };
+      const interpretBody: Record<string, unknown> = { text, context };
       if (image_data_urls) interpretBody.image_data_urls = image_data_urls;
       const interpretRes = await fetch('/api/interpret', {
         method: 'POST',
@@ -135,16 +134,15 @@ export default function Home() {
       }
 
       const interpretJson = (await interpretRes.json()) as Partial<InterpretResponse>;
-
-      // 严格按字段结构展示；若后端字段缺失则使用兜底空值（不猜内容）
       setSurfaceMeaning(safeString(interpretJson.surface_meaning));
       setSubtext(safeString(interpretJson.subtext));
       setEmotionScore(safeNumber(interpretJson.emotion_score));
       setRiskLevel(safeRisk(interpretJson.risk_level));
-      setSuggestion(safeString(interpretJson.suggestion));
+      setSuggestionPush(safeString(interpretJson.suggestion_push));
+      setSuggestionKeep(safeString(interpretJson.suggestion_keep));
+      setSuggestionWithdraw(safeString(interpretJson.suggestion_withdraw));
 
-      // 任意模式都会自动生成三条回复建议
-      const replyBody: Record<string, unknown> = { text, context: bg };
+      const replyBody: Record<string, unknown> = { text, context };
       if (image_data_urls) replyBody.image_data_urls = image_data_urls;
       const replyRes = await fetch('/api/reply', {
         method: 'POST',
@@ -168,7 +166,6 @@ export default function Home() {
           content: safeString(r.content),
         }))
         .slice(0, 3);
-
       setReplies(repsParsed);
 
       setCopiedIndex(null);
@@ -191,281 +188,134 @@ export default function Home() {
     }
   }
 
+  const cardClass =
+    'rounded-xl border border-zinc-200/80 bg-white px-6 py-6 shadow-[0_1px_0_0_rgba(0,0,0,0.04)]';
+  const sectionTitle = 'text-xs font-medium uppercase tracking-[0.12em] text-zinc-500';
+  const bodyText = 'mt-3 text-[15px] leading-relaxed text-zinc-800';
+
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50">
-      <div className="mx-auto max-w-5xl px-4 py-10">
-        {/* 顶部标题（产品级文案） */}
-        <div className="mb-6">
-          <div className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-1 text-sm shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-            <span className="font-semibold">关系沟通AI工具</span>
-            <span className="text-zinc-500 dark:text-zinc-400">分析 + 决策 + 回复</span>
-          </div>
-
-          <h1 className="mt-4 text-3xl font-bold tracking-tight">
-            一句话看懂潜台词，生成可落地沟通方案
+    <div className="min-h-screen bg-[#fafafa] text-zinc-900 antialiased">
+      <div className="mx-auto max-w-[640px] px-5 py-14 md:py-20">
+        <header className="mb-10 border-b border-zinc-200/80 pb-8">
+          <p className={sectionTitle}>关系沟通</p>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-zinc-950 md:text-[1.65rem]">
+            读懂对方，再回复
           </h1>
-          <p className="mt-2 text-zinc-600 dark:text-zinc-300">
-            输入对方消息与背景，选择模式后生成：分析结果、策略建议、以及 3 种风格的回复（带复制按钮）。
+          <p className="mt-3 max-w-md text-sm leading-relaxed text-zinc-500">
+            粘贴对方的话或上传截图，一键生成解读、回复与策略。
           </p>
-        </div>
+        </header>
 
-        {/* 输入区 */}
-        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          {/* 上传图片（多张） */}
-          <div>
-            <div className="mb-2 text-sm font-medium text-zinc-700 dark:text-zinc-200">
-              上传图片（可多张）
-            </div>
+        {/* 单一输入 + 提交 */}
+        <div className="space-y-4">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="输入对方发来的内容，或补充你们的背景……"
+            rows={6}
+            className="w-full resize-y rounded-xl border border-zinc-200 bg-white px-4 py-3.5 text-[15px] text-zinc-900 placeholder:text-zinc-400 outline-none transition-shadow focus:border-zinc-300 focus:shadow-[0_0_0_3px_rgba(0,0,0,0.05)]"
+          />
 
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 shadow-sm transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-50 dark:hover:bg-zinc-800">
-                <span>选择图片</span>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => addImages(e.target.files)}
-                />
-              </label>
-
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(e) => addImages(e.target.files)}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-900"
+              >
+                添加图片
+              </button>
               {images.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setImages([])}
-                  className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                >
-                  清空
-                </button>
+                <>
+                  <span className="text-xs text-zinc-400">{images.length} 张</span>
+                  <button
+                    type="button"
+                    onClick={() => setImages([])}
+                    className="text-xs text-zinc-500 underline decoration-zinc-300 underline-offset-2 hover:text-zinc-800"
+                  >
+                    清空
+                  </button>
+                </>
               )}
             </div>
-
-            {images.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-3">
-                {images.map((img, idx) => (
-                  <div
-                    key={`${img.name}-${idx}`}
-                    className="relative rounded-xl border border-zinc-200 bg-white p-1 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
-                  >
-                    <img
-                      src={img.dataUrl}
-                      alt={img.name}
-                      className="h-20 w-20 rounded-lg object-cover"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeImage(idx)}
-                      className="absolute -right-2 -top-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-zinc-200 bg-white text-xs font-bold text-zinc-700 shadow-sm transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                      aria-label="Remove image"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-              图片会随请求一起发送，用于“分析/回复/优化”。（单次上传不要太多大图）
-            </p>
-          </div>
-
-          <div className="mt-6 grid gap-6 lg:grid-cols-2">
-            <div>
-              <label className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-200">
-                对方消息（可选）
-              </label>
-              <textarea
-                value={otherMessage}
-                onChange={(e) => setOtherMessage(e.target.value)}
-                placeholder="可留空；仅用图片也可以。若填写，粘贴对方原话..."
-                className="min-h-[160px] w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-zinc-900 placeholder:text-zinc-500 outline-none focus:border-zinc-300 focus:ring-0 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50"
-              />
-              <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                填写文字会让分析更贴近语气和语义；不填也可以只分析图片。
-              </p>
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-200">
-                背景（可选）
-              </label>
-              <textarea
-                value={context}
-                onChange={(e) => setContext(e.target.value)}
-                placeholder="可留空；例如关系阶段、关键事件、对方在意点..."
-                className="min-h-[160px] w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-zinc-900 placeholder:text-zinc-500 outline-none focus:border-zinc-300 focus:ring-0 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50"
-              />
-              <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                背景会影响建议方向；不填默认按一般关系沟通场景处理。
-              </p>
-            </div>
-          </div>
-
-          {/* 模式选择 */}
-          <div className="mt-6">
-            <div className="mb-3 text-sm font-medium text-zinc-700 dark:text-zinc-200">
-              模式选择
-            </div>
-            <div className="flex flex-wrap gap-3">
-              {[
-                { id: 'interpret' as const, label: '分析', desc: '判断潜台词 / 情绪 / 风险' },
-                { id: 'reply' as const, label: '回复', desc: '生成可复制回复（3 种风格）' },
-                { id: 'optimize' as const, label: '优化', desc: '在回复基础上给出更稳的表达' },
-              ].map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => setMode(m.id)}
-                  className={[
-                    'rounded-xl border px-4 py-3 text-left transition',
-                    'dark:border-zinc-800',
-                    mode === m.id
-                      ? 'border-zinc-900 bg-zinc-900 text-white shadow-sm dark:border-zinc-200 dark:bg-zinc-50 dark:text-zinc-900'
-                      : 'border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-50',
-                  ].join(' ')}
-                >
-                  <div className="font-semibold">{m.label}</div>
-                  <div className="mt-1 text-xs opacity-80">{m.desc}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* 执行按钮 */}
-          <div className="mt-6 flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={run}
               disabled={!canRun}
-              className={[
-                'rounded-xl px-5 py-3 text-sm font-semibold transition',
-                'border border-zinc-900 bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-60 disabled:hover:bg-zinc-900',
-                'dark:border-zinc-200 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-white',
-              ].join(' ')}
+              className="rounded-xl bg-zinc-950 px-6 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {loading ? '生成中…' : mode === 'interpret' ? '开始分析' : mode === 'reply' ? '生成回复' : '开始优化'}
+              {loading ? '生成中…' : '生成'}
             </button>
-
-            <div className="text-xs text-zinc-500 dark:text-zinc-400">
-              每次生成会先调用 `POST /api/interpret`，再自动调用 `POST /api/reply` 得到三条回复建议。
-            </div>
           </div>
 
+          {images.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {images.map((img, idx) => (
+                <div key={`${img.name}-${idx}`} className="group relative">
+                  <img
+                    src={img.dataUrl}
+                    alt=""
+                    className="h-14 w-14 rounded-lg border border-zinc-200 object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeImage(idx)}
+                    className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100"
+                    aria-label="移除"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           {error && (
-            <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-200">
+            <div className="rounded-xl border border-red-200 bg-red-50/80 px-4 py-3 text-sm text-red-900">
               {error}
             </div>
           )}
         </div>
 
-        {/* 结果展示区（卡片式） */}
-        <div className="mt-6">
-          <div className="mb-3 text-sm font-medium text-zinc-700 dark:text-zinc-200">
-            结果展示
-          </div>
+        {/* 结果：四块 */}
+        {(surfaceMeaning || subtext || replies.length > 0 || suggestionPush) && (
+          <div className="mt-14 space-y-6">
+            <p className={sectionTitle}>结果</p>
 
-          <div className="grid gap-4 lg:grid-cols-3">
-            {/* 分析结果卡片 */}
-            <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 lg:col-span-1">
-              <div className="text-base font-semibold">分析结果</div>
-
-              <div className="mt-4 space-y-3">
+            {/* 1. 对方真实意思 */}
+            <section className={cardClass}>
+              <h2 className="text-base font-semibold text-zinc-950">对方真实意思</h2>
+              <div className="mt-5 space-y-5 border-t border-zinc-100 pt-5">
                 <div>
-                  <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                    表层含义
-                  </div>
-                  <div className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">
-                    {surfaceMeaning || '—'}
-                  </div>
+                  <p className="text-xs font-medium text-zinc-500">字面在说什么</p>
+                  <p className={bodyText}>{surfaceMeaning || '—'}</p>
                 </div>
-
                 <div>
-                  <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                    潜台词
-                  </div>
-                  <div className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">
-                    {subtext || '—'}
-                  </div>
+                  <p className="text-xs font-medium text-zinc-500">潜台词</p>
+                  <p className={bodyText}>{subtext || '—'}</p>
                 </div>
-
-                <div className="grid grid-cols-2 gap-3">
+                {replyAnalysis.trim() ? (
                   <div>
-                    <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                      情绪分数（0–10）
-                    </div>
-                    <div className="mt-1 text-sm leading-relaxed">
-                      {emotionScore === null ? '—' : emotionScore}
-                    </div>
+                    <p className="text-xs font-medium text-zinc-500">综合解读</p>
+                    <p className={bodyText}>{replyAnalysis}</p>
                   </div>
-                  <div>
-                    <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                      风险等级
-                    </div>
-                    <div className="mt-1 text-sm leading-relaxed">
-                      {formatRiskLevel(riskLevel)}
-                    </div>
-                  </div>
-                </div>
+                ) : null}
               </div>
-            </div>
+            </section>
 
-            {/* 策略建议卡片 */}
-            <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 lg:col-span-1">
-              <div className="text-base font-semibold">策略建议</div>
-
-              <div className="mt-4 space-y-3">
-                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
-                  <div className="text-xs font-semibold text-zinc-600 dark:text-zinc-200">
-                    推进
-                  </div>
-                  <div className="mt-1 whitespace-pre-wrap leading-relaxed">
-                    {suggestion || '—'}
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
-                  <div className="text-xs font-semibold text-zinc-600 dark:text-zinc-200">
-                    保持
-                  </div>
-                  <div className="mt-1 whitespace-pre-wrap leading-relaxed">
-                    {suggestion || '—'}
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
-                  <div className="text-xs font-semibold text-zinc-600 dark:text-zinc-200">
-                    收
-                  </div>
-                  <div className="mt-1 whitespace-pre-wrap leading-relaxed">
-                    {suggestion || '—'}
-                  </div>
-                </div>
-
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  说明：`/api/interpret` 仅返回一个 `suggestion` 字段，因此以上三个分项展示同一内容。
-                </p>
-
-                <div className="rounded-xl border border-zinc-200 bg-white p-3 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
-                  <div className="text-xs font-semibold text-zinc-600 dark:text-zinc-200">
-                    回复补充分析
-                  </div>
-                  <div className="mt-1 whitespace-pre-wrap leading-relaxed">
-                    {replyAnalysis || '—'}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 回复建议卡片 */}
-            <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 lg:col-span-1">
-              <div className="text-base font-semibold">回复建议</div>
-              <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-                每条回复都带 Copy 按钮
-              </div>
-
-              <div className="mt-4 space-y-3">
+            {/* 2. 建议回复 · 三种风格 */}
+            <section className={cardClass}>
+              <h2 className="text-base font-semibold text-zinc-950">建议回复</h2>
+              <p className="mt-1 text-xs text-zinc-500">三种风格，可单独复制</p>
+              <div className="mt-5 space-y-4">
                 {Array.from({ length: 3 }).map((_, idx) => {
                   const item = replies[idx];
                   const label = item?.label ?? '';
@@ -473,37 +323,70 @@ export default function Home() {
                   return (
                     <div
                       key={idx}
-                      className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950"
+                      className="rounded-lg border border-zinc-100 bg-zinc-50/50 px-4 py-4"
                     >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-xs font-semibold text-zinc-600 dark:text-zinc-200">
-                          {label || `回复 ${idx + 1}`}
-                        </div>
+                      <div className="flex items-start justify-between gap-3">
+                        <span className="text-xs font-medium text-zinc-600">
+                          {label || `风格 ${idx + 1}`}
+                        </span>
                         <button
                           type="button"
                           onClick={() => copyText(content, idx)}
                           disabled={!content.trim()}
-                          className={[
-                            'rounded-lg border px-2.5 py-1 text-xs font-semibold transition',
-                            'dark:border-zinc-700',
-                            content.trim()
-                              ? 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800'
-                              : 'border-zinc-200 bg-zinc-50 text-zinc-400 cursor-not-allowed dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-600',
-                          ].join(' ')}
+                          className="shrink-0 text-xs font-medium text-zinc-500 underline decoration-zinc-300 underline-offset-4 hover:text-zinc-900 disabled:pointer-events-none disabled:opacity-40"
                         >
-                          {copiedIndex === idx ? '已复制' : 'Copy'}
+                          {copiedIndex === idx ? '已复制' : '复制'}
                         </button>
                       </div>
-                      <div className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-zinc-900 dark:text-zinc-50">
+                      <p className="mt-2 text-[15px] leading-relaxed text-zinc-800">
                         {content.trim() ? content : '—'}
-                      </div>
+                      </p>
                     </div>
                   );
                 })}
               </div>
-            </div>
+            </section>
+
+            {/* 3. 风险提示 */}
+            <section className={cardClass}>
+              <h2 className="text-base font-semibold text-zinc-950">风险提示</h2>
+              <div className="mt-5 flex flex-wrap gap-8 border-t border-zinc-100 pt-5">
+                <div>
+                  <p className="text-xs font-medium text-zinc-500">风险等级</p>
+                  <p className="mt-1 text-lg font-medium text-zinc-950">{formatRiskLevel(riskLevel)}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-zinc-500">情绪强度</p>
+                  <p className="mt-1 text-lg font-medium text-zinc-950">
+                    {emotionScore === null ? '—' : `${emotionScore} / 10`}
+                  </p>
+                </div>
+              </div>
+              {riskLevel ? (
+                <p className="mt-4 text-sm leading-relaxed text-zinc-600">{riskGuidance(riskLevel)}</p>
+              ) : null}
+            </section>
+
+            {/* 4. 下一步策略 */}
+            <section className={cardClass}>
+              <h2 className="text-base font-semibold text-zinc-950">下一步策略</h2>
+              <div className="mt-5 space-y-4 border-t border-zinc-100 pt-5">
+                {[
+                  { title: '推进', body: suggestionPush },
+                  { title: '保持', body: suggestionKeep },
+                  { title: '收', body: suggestionWithdraw },
+                ].map((row) => (
+                  <div key={row.title} className="border-l-2 border-zinc-900 pl-4">
+                    <p className="text-xs font-semibold text-zinc-950">{row.title}</p>
+                    <p className="mt-1.5 text-[15px] leading-relaxed text-zinc-700">
+                      {row.body || '—'}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </section>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

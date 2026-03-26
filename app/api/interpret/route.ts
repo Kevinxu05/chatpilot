@@ -60,12 +60,14 @@ export async function POST(request: Request) {
     const userParts: Array<VisionTextPart | VisionImagePart> = [
       {
         type: 'text',
-        text: `对方消息（可为空）：\n${text || '（未提供）'}\n\n背景（可为空）：\n${context || '（未提供）'}\n\n请只输出合法 JSON，不要 markdown。所有中文文案字段必须用简体中文书写：surface_meaning、subtext、suggestion。\nemotion_score 用 0–10 的浮点数或整数表示。\nrisk_level 仅使用英文枚举：low、medium、high。\n\nJSON 结构：\n{
+        text: `对方消息（可为空）：\n${text || '（未提供）'}\n\n背景（可为空）：\n${context || '（未提供）'}\n\n请只输出合法 JSON，不要 markdown。以下字段必须用简体中文：surface_meaning、subtext、suggestion_push、suggestion_keep、suggestion_withdraw。\n其中 suggestion_push=推进策略（关系/沟通上如何往前走），suggestion_keep=保持策略（稳定节奏、不激化），suggestion_withdraw=收策略（降温、留白、设边界）。三条必须语义不同、可分别执行。\nemotion_score：0–10。risk_level：仅 low、medium、high。\n\nJSON 结构：\n{
   "surface_meaning": string,
   "subtext": string,
   "emotion_score": number,
   "risk_level": "low" | "medium" | "high",
-  "suggestion": string
+  "suggestion_push": string,
+  "suggestion_keep": string,
+  "suggestion_withdraw": string
 }`,
       },
     ];
@@ -81,7 +83,7 @@ export async function POST(request: Request) {
         {
           role: 'system',
           content:
-            '你是关系沟通分析助手。只输出符合约定字段结构的 JSON，不要 markdown 代码块。surface_meaning、subtext、suggestion 必须写简体中文。risk_level 只能是 low、medium、high。',
+            '你是关系沟通分析助手。只输出符合约定字段结构的 JSON，不要 markdown 代码块。surface_meaning、subtext、suggestion_push、suggestion_keep、suggestion_withdraw 必须写简体中文；三条策略含义不得雷同。risk_level 只能是 low、medium、high。',
         },
         {
           role: 'user',
@@ -103,7 +105,9 @@ export async function POST(request: Request) {
       subtext: unknown;
       emotion_score: unknown;
       risk_level: unknown;
-      suggestion: unknown;
+      suggestion_push: unknown;
+      suggestion_keep: unknown;
+      suggestion_withdraw: unknown;
     }>;
 
     if (typeof p.surface_meaning !== 'string' || typeof p.subtext !== 'string') {
@@ -120,8 +124,15 @@ export async function POST(request: Request) {
       return Response.json({ error: 'Model output risk_level must be low|medium|high.' }, { status: 500 });
     }
 
-    if (typeof p.suggestion !== 'string') {
-      return Response.json({ error: 'Model output suggestion must be a string.' }, { status: 500 });
+    if (
+      typeof p.suggestion_push !== 'string' ||
+      typeof p.suggestion_keep !== 'string' ||
+      typeof p.suggestion_withdraw !== 'string'
+    ) {
+      return Response.json(
+        { error: 'Model output suggestion_push/suggestion_keep/suggestion_withdraw must be strings.' },
+        { status: 500 }
+      );
     }
 
     return Response.json({
@@ -129,7 +140,9 @@ export async function POST(request: Request) {
       subtext: p.subtext,
       emotion_score: emotionScore,
       risk_level: p.risk_level,
-      suggestion: p.suggestion,
+      suggestion_push: p.suggestion_push,
+      suggestion_keep: p.suggestion_keep,
+      suggestion_withdraw: p.suggestion_withdraw,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to get interpret response.';
