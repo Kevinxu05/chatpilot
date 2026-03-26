@@ -1,16 +1,19 @@
 'use client';
 
+/* eslint-disable @next/next/no-img-element */
+
 import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card } from '@/components/ui/card';
 import { ChatMessage } from './ChatMessage';
-import { Send } from 'lucide-react';
+import { Send, Image as ImageIcon } from 'lucide-react';
 
 interface Message {
   id: string;
   text: string;
   isUser: boolean;
+  imageUrl?: string; // data URL for local preview + API payload
+  promptText?: string; // text part to send to the model (may differ from display text)
 }
 
 export function ChatInterface() {
@@ -23,7 +26,10 @@ export function ChatInterface() {
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -36,18 +42,26 @@ export function ChatInterface() {
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!input.trim()) return;
+    if (!input.trim() && !imageDataUrl) return;
 
     // Add user message
+    const trimmed = input.trim();
+    const displayText = trimmed ? trimmed : '已发送图片';
+    const promptText = trimmed ? trimmed : '请分析该图片。';
     const userMessage: Message = {
       id: Date.now().toString(),
-      text: input,
+      text: displayText,
       isUser: true,
+      imageUrl: imageDataUrl || undefined,
+      promptText,
     };
 
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
     setInput('');
+    setImageDataUrl(null);
+    setImagePreviewUrl(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setIsLoading(true);
 
     try {
@@ -58,10 +72,22 @@ export function ChatInterface() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          messages: newMessages.map((msg) => ({
-            role: msg.isUser ? 'user' : 'assistant',
-            content: msg.text,
-          })),
+          messages: newMessages.map((msg) => {
+            const role = msg.isUser ? 'user' : 'assistant';
+            if (msg.imageUrl) {
+              return {
+                role,
+                content: [
+                  { type: 'text', text: msg.promptText ?? msg.text },
+                  {
+                    type: 'image_url',
+                    image_url: { url: msg.imageUrl },
+                  },
+                ],
+              };
+            }
+            return { role, content: msg.text };
+          }),
         }),
       });
 
@@ -108,6 +134,7 @@ export function ChatInterface() {
               key={message.id}
               message={message.text}
               isUser={message.isUser}
+              imageUrl={message.imageUrl}
             />
           ))}
           {isLoading && (
@@ -131,6 +158,36 @@ export function ChatInterface() {
           onSubmit={handleSendMessage}
           className="mx-auto flex max-w-xl items-center gap-2 rounded-full border border-zinc-200/80 bg-white/80 px-4 py-2 backdrop-blur shadow-sm"
         >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              const reader = new FileReader();
+              reader.onload = () => {
+                const result = typeof reader.result === 'string' ? reader.result : null;
+                setImageDataUrl(result);
+                setImagePreviewUrl(result);
+              };
+              reader.readAsDataURL(file);
+            }}
+          />
+
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            disabled={isLoading}
+            className="rounded-full text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <ImageIcon className="h-4 w-4" />
+            <span className="sr-only">Upload image</span>
+          </Button>
+
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -138,11 +195,37 @@ export function ChatInterface() {
             disabled={isLoading}
             className="flex-1 border-0 bg-transparent px-1 py-0 text-zinc-900 placeholder:text-zinc-500 focus-visible:ring-0 focus-visible:border-transparent disabled:opacity-60"
           />
+
+          {imagePreviewUrl && (
+            <div className="mr-1 flex items-center gap-2">
+              <img
+                src={imagePreviewUrl}
+                alt="Preview"
+                className="h-8 w-8 rounded-lg border border-zinc-200/70 object-cover"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                disabled={isLoading}
+                className="h-7 w-7 rounded-full text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700"
+                onClick={() => {
+                  setImageDataUrl(null);
+                  setImagePreviewUrl(null);
+                  if (fileInputRef.current) fileInputRef.current.value = '';
+                }}
+              >
+                <span className="text-base leading-none">×</span>
+                <span className="sr-only">Remove image</span>
+              </Button>
+            </div>
+          )}
+
           <Button
             type="submit"
             variant="ghost"
             size="icon"
-            disabled={isLoading || !input.trim()}
+            disabled={isLoading || (!input.trim() && !imageDataUrl)}
             className="rounded-full text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900"
           >
             <Send className="h-4 w-4" />

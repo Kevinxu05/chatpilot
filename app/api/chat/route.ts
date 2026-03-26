@@ -18,10 +18,12 @@ export async function POST(request: Request) {
     const content = response.choices[0].message.content;
 
     return Response.json({ content });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('OpenAI API error:', error);
+    const message =
+      error instanceof Error ? error.message : 'Failed to get response from OpenAI';
     return Response.json(
-      { error: error.message || 'Failed to get response from OpenAI' },
+      { error: message },
       { status: 500 }
     );
   }
