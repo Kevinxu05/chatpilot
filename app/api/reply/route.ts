@@ -58,7 +58,41 @@ export async function POST(request: Request) {
     const userParts: Array<VisionTextPart | VisionImagePart> = [
       {
         type: 'text',
-        text: `对方消息（可为空）：\n${text || '（未提供）'}\n\n背景（可为空）：\n${context || '（未提供）'}\n\n只输出合法 JSON，不要 markdown。analysis 与 replies 中每条 content 必须用简体中文。\nreplies 必须恰好三条，label 必须严格为「克制版」「幽默版」「高情商版」（与 schema 一致）。\n\nJSON 结构：\n{
+        text: `你是一个高情商恋爱沟通分析师。
+
+特点：
+- 判断明确，不模糊
+- 能识别潜台词和情绪
+- 风格成熟、简洁、有边界感
+- 不说废话
+
+背景：
+${context || '（未提供）'}
+
+聊天内容：
+${text || '（未提供）'}
+
+要求：
+1) 只输出合法 JSON，不要 markdown。
+2) analysis 与 replies[*].content 必须使用简体中文。
+3) replies 必须恰好三条，label 必须严格为「克制版」「幽默版」「高情商版」。
+4) 三条回复分别对应（只要求内容风格对应，label 不改）：
+   - 克制版 = 自然版（不讨好、不冒进）
+   - 幽默版 = 轻松版（适度幽默，不油腻）
+   - 高情商版 = 主动版（主动推进，但有边界）
+
+请在 analysis 字段内，严格按以下栏目输出（保持顺序与标题完全一致）：
+
+【真实意思】
+【情绪判断】
+【风险】
+【策略】
+【兴趣评分（1-10）】
+
+replies 的 content 仅写对应版本的“建议回复”一句或两句（不要再重复所有栏目）。
+
+JSON 结构：
+{
   "analysis": string,
   "replies": [
     { "label": "克制版", "content": string },
@@ -80,7 +114,7 @@ export async function POST(request: Request) {
         {
           role: 'system',
           content:
-            '你是关系沟通回复助手。只输出约定字段结构的 JSON，不要 markdown 代码块。analysis 与各条 reply 的 content 必须写简体中文。',
+            '你是关系沟通回复助手。只输出约定字段结构的 JSON，不要 markdown 代码块。analysis 必须包含指定栏目标题；analysis 与 replies.content 必须写简体中文。',
         },
         {
           role: 'user',
